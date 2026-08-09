@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block outer %}
+<div class="authwrap">
+  <div class="authcard">
+    <img src="{{ brand.LOGO_VERTICAL }}" alt="MLR Consultores">
+    <div class="lema">Configuracion inicial</div>
+    {% with msgs = get_flashed_messages() %}{% for m in msgs %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
+    <p class="muted" style="text-align:left">Crea el usuario y la <b>contrasena maestra</b>. Con ella entras y se cifran/descifran las API keys. Gu&aacute;rdala bien: no se puede recuperar.</p>
+    <form method="post" action="{{ url_for('setup') }}">
+      <div style="text-align:left">
+        <label>Usuario</label><input name="username" value="mlr" required>
+        <label>Contrasena maestra</label><input type="password" name="password" required>
+        <label>Repite la contrasena</label><input type="password" name="confirm" required>
+      </div>
+      <div style="margin-top:16px"><button type="submit" style="width:100%">Crear y continuar</button></div>
+    </form>
+  </div>
+</div>
+{% endblock %}

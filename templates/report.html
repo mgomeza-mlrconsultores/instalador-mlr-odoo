@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h2>Informe de instalación</h2>
+  <div class="muted">Base: {{ conn['name'] }} ({{ conn['database'] }}) · {{ devfile }}
+    {% if mail_to %} · informe enviado a {{ mail_to }}{% endif %}</div>
+  <div style="margin:14px 0">{{ report.html() | safe }}</div>
+  <a class="btn" href="{{ url_for('index') }}">Volver al catálogo</a>
+</div>
+{% endblock %}
