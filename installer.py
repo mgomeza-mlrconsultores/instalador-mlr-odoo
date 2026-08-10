@@ -31,6 +31,10 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# Sentinel: indica "no incluir esta clave al crear" (p.ej. crear ubicacion sin padre).
+_OMIT = object()
+
+
 class Report:
     """Acumula el informe. Cada entrada lleva hora (UTC ISO) y nivel.
     on_line(seq, ts, level, msg) se invoca por cada linea para transmision en vivo."""
@@ -278,11 +282,29 @@ class Installer:
         - dict {"_search":[model, by, value]}  -> id encontrado por busqueda (o False)
         - str -> se sustituyen marcadores ({{PARAM:..}}, {{GROUP}}, etc.)
         - otro -> tal cual"""
+        if isinstance(raw, dict) and "_customer_parent" in raw:
+            # Toma la ubicacion estandar de Customers y devuelve SU padre, de modo que la
+            # ubicacion nueva quede como HERMANA de Customers (identica salvo el nombre).
+            # Si Customers no tiene padre en esta base -> _OMIT (crear sin padre).
+            # Si no hay ninguna ubicacion de cliente -> False (no se puede crear).
+            cust = self.c.ref("stock.stock_location_customers")
+            if not cust:
+                found = self.c.search("stock.location", [("usage", "=", "customer")], 1)
+                cust = found[0] if found else None
+            if not cust:
+                return False
+            rec = self.c.search_read("stock.location", [("id", "=", cust)], ["location_id"], 1)
+            parent = rec[0]["location_id"] if rec else False
+            if isinstance(parent, (list, tuple)) and parent:
+                return parent[0]
+            if isinstance(parent, int) and parent:
+                return parent
+            return _OMIT   # Customers existe pero sin padre -> crear sin padre
         if isinstance(raw, dict) and "_any" in raw:
             # Intenta varias estrategias en orden; usa la primera que resuelva.
             for cand in raw["_any"]:
                 rv = self._resolve_create_val(cand)
-                if rv:
+                if rv is _OMIT or rv:
                     return rv
             return False
         if isinstance(raw, dict) and "_ref" in raw:
@@ -316,8 +338,12 @@ class Installer:
                     bad_ref = None
                     for k, raw in p["create"].items():
                         rv = self._resolve_create_val(raw)
-                        if rv is False and isinstance(raw, dict) and ("_search" in raw or "_ref" in raw or "_any" in raw):
-                            bad_ref = raw.get("_search") or raw.get("_ref") or raw.get("_any")
+                        if rv is _OMIT:
+                            continue   # no incluir esta clave (p.ej. ubicacion sin padre)
+                        if rv is False and isinstance(raw, dict) and any(
+                                key in raw for key in ("_search", "_ref", "_any", "_customer_parent")):
+                            bad_ref = (raw.get("_search") or raw.get("_ref")
+                                       or raw.get("_any") or "_customer_parent")
                         cvals[k] = rv
                     if bad_ref is not None:
                         self.r.err("Param %s: no se pudo crear %s, falta el registro padre (%s)"
