@@ -6,5 +6,7 @@
     Base: {{ r['connection_name'] }} ({{ r['database'] }}) · Usuario: {{ r['user'] }}</div>
   <div style="margin:14px 0">{{ r['report_html'] | safe }}</div>
   <a class="btn" href="{{ url_for('logs') }}">Volver al historial</a>
+  <a class="btn sec" href="{{ url_for('log_download', lid=r['id']) }}">Descargar .txt</a>
+  {% if r['job_id'] %}<a class="btn sec" href="{{ url_for('install_job', job_id=r['job_id']) }}">Ver bitácora</a>{% endif %}
 </div>
 {% endblock %}

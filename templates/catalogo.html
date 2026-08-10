@@ -20,6 +20,7 @@
               <option value="">— base destino —</option>
               {% for c in connections %}<option value="{{c['id']}}">{{c['name']}} ({{c['database']}})</option>{% endfor %}
             </select>
+            <label style="margin:0;font-weight:400"><input type="checkbox" name="rollback" value="1" checked style="width:auto"> rollback si hay errores</label>
             <label style="margin:0;font-weight:400"><input type="checkbox" name="send_mail" value="1" style="width:auto"> correo</label>
             <button class="sm" type="submit">Instalar esta versión</button>
             {% if cur_role=='administrador' %}

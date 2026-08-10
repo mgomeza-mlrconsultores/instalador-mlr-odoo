@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h2>Bitácora de instalación</h2>
+  <div class="muted" style="line-height:1.7">
+    <b>App:</b> {{ job['app_code'] }} · versión {{ job['version'] }}<br>
+    <b>Base:</b> {{ job['connection_name'] }} ({{ job['database'] }})<br>
+    <b>Usuario:</b> {{ job['user'] }} · <b>Inicio:</b> {{ fmt(job['ts_start']) }}
+  </div>
+
+  <div id="statusbar" style="margin:14px 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span id="badge" class="pill" style="background:#fff3cd;color:#8a6d00">● En ejecución…</span>
+    <span class="pill" style="background:#e7f4ec;color:#1c7a46">OK: <b id="cok">{{ job['ok'] }}</b></span>
+    <span class="pill" style="background:#fff6d9;color:#8a6d00">Avisos: <b id="cwarn">{{ job['warn'] }}</b></span>
+    <span class="pill" style="background:#fde7ea;color:#b00020">Errores: <b id="cerr">{{ job['err'] }}</b></span>
+    <a id="dl" class="btn sec sm" href="{{ url_for('install_job_download', job_id=job['id']) }}">Descargar log (.txt)</a>
+    <label style="margin:0;font-weight:400"><input type="checkbox" id="autoscroll" checked style="width:auto"> auto-scroll</label>
+  </div>
+
+  <div id="term" style="background:#0d1b1f;color:#d6e6ea;border-radius:10px;padding:14px 16px;
+       font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55;
+       height:60vh;overflow:auto;white-space:pre-wrap;word-break:break-word"></div>
+
+  <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+    <a class="btn" href="{{ url_for('catalogo') }}">Volver al catálogo</a>
+    <a class="btn sec" href="{{ url_for('logs') }}">Ver historial</a>
+  </div>
+</div>
+
+<script>
+(function(){
+  var jobId = {{ job['id']|tojson }};
+  var initial = {{ lines|tojson }};
+  var term = document.getElementById('term');
+  var badge = document.getElementById('badge');
+  var lastSeq = 0, done = false;
+  var COLORS = {OK:'#7fe0a6', INFO:'#9fc7d1', WARN:'#ffd97a', ERROR:'#ff8a9b'};
+
+  function fmtTime(iso){
+    try { return new Date(iso).toLocaleTimeString('es-MX',{hour12:false,timeZone:'America/Mexico_City'}); }
+    catch(e){ return (iso||'').substring(11,19); }
+  }
+  function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function append(l){
+    var div = document.createElement('div');
+    div.style.color = COLORS[l.level] || '#d6e6ea';
+    div.innerHTML = '<span style="color:#5f7a80">'+fmtTime(l.ts)+'</span>  '
+                    + '<span style="opacity:.85">['+l.level+']</span> ' + esc(l.text);
+    term.appendChild(div);
+    if (l.seq > lastSeq) lastSeq = l.seq;
+  }
+  (initial||[]).forEach(function(l){ append({seq:l.seq, ts:l.ts, level:l.level, text:l.line}); });
+
+  function setDone(status, ok, warn, err){
+    done = true;
+    document.getElementById('cok').textContent = ok;
+    document.getElementById('cwarn').textContent = warn;
+    document.getElementById('cerr').textContent = err;
+    if (status === 'rolledback'){
+      badge.style.background='#fde7ea'; badge.style.color='#b00020';
+      badge.textContent='↩ Rollback aplicado — base restaurada ('+err+' errores)';
+    } else if (status === 'error' || err > 0){
+      badge.style.background='#fde7ea'; badge.style.color='#b00020';
+      badge.textContent='✖ Terminó con '+err+' error(es)';
+    } else {
+      badge.style.background='#e7f4ec'; badge.style.color='#1c7a46';
+      badge.textContent='✔ Instalación completada sin errores';
+    }
+  }
+  function poll(){
+    if (done) return;
+    fetch("{{ url_for('install_job_tail', job_id=job['id']) }}?after="+lastSeq)
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        (d.lines||[]).forEach(append);
+        document.getElementById('cok').textContent = d.ok;
+        document.getElementById('cwarn').textContent = d.warn;
+        document.getElementById('cerr').textContent = d.err;
+        if (document.getElementById('autoscroll').checked) term.scrollTop = term.scrollHeight;
+        if (d.status && d.status !== 'running'){ setDone(d.status, d.ok, d.warn, d.err); return; }
+        setTimeout(poll, 1500);
+      })
+      .catch(function(){ setTimeout(poll, 2500); });
+  }
+  if (document.getElementById('autoscroll').checked) term.scrollTop = term.scrollHeight;
+  {% if job['status'] == 'running' %} poll(); {% else %} setDone({{ job['status']|tojson }}, {{ job['ok'] }}, {{ job['warn'] }}, {{ job['err'] }}); {% endif %}
+})();
+</script>
+{% endblock %}

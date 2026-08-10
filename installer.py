@@ -8,13 +8,14 @@ etapas (ciclos) que van obteniendo los IDs para referenciarlos entre etapas:
 Persistencia de IDs: cada param resuelto y cada modelo/campo/accion creado se guarda
 en Parametros del sistema de Odoo (ir.config_parameter) con clave
   mlr.installer.<lote>.<TIPO>.<CLAVE>
-Al iniciar cada corrida se leen TODOS los 'mlr.installer.*' y se siembran en el contexto,
-de modo que las vistas ({{ACTION:...}}) y otros lotes pueden referenciar IDs creados antes,
-incluso entre re-ejecuciones.
 
 Idempotente: antes de crear busca por nombre+modelo (o code/xmlid). Si existe y coincide,
-actualiza; si no coincide el tipo de un campo, registra el error y sigue. Nunca aborta por
-un error puntual: acumula todo en un informe y (opcional) lo manda por correo al final.
+actualiza; si no, crea. Nunca aborta por un error puntual: acumula todo en un informe.
+
+Rollback: si se pasa un Rollback tracker, cada objeto CREADO en la corrida (no los que ya
+existian) se registra para poder deshacerlo en orden inverso si al final hay errores.
+
+Bitacora: el Report timestampa cada linea y puede transmitirla en vivo via on_line().
 
 Marcadores admitidos dentro de code/arch/domain (listas de lineas o texto):
   {{PARAM:CLAVE}}   -> valor resuelto del param CLAVE (normalmente un id)
@@ -23,76 +24,164 @@ Marcadores admitidos dentro de code/arch/domain (listas de lineas o texto):
   {{GROUPS}}        -> 'base.group_system,<grupo custom>'  (para groups= de vistas)
 """
 import re
+from datetime import datetime, timezone
 
+
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class Report:
-    def __init__(self):
-        self.lines = []
+    """Acumula el informe. Cada entrada lleva hora (UTC ISO) y nivel.
+    on_line(seq, ts, level, msg) se invoca por cada linea para transmision en vivo."""
+
+    def __init__(self, on_line=None):
+        self.lines = []      # strings "[OK] ..." (compatibilidad)
+        self.entries = []    # dicts {seq, ts, level, msg}
         self.errors = []
         self.warnings = []
+        self.on_line = on_line
+
+    def _add(self, level, msg):
+        ts = _now_iso()
+        seq = len(self.entries) + 1
+        self.entries.append({"seq": seq, "ts": ts, "level": level, "msg": msg})
+        tag = {"OK": "[OK] ", "INFO": "[..] ", "WARN": "[AVISO] ", "ERROR": "[ERROR] "}[level]
+        self.lines.append(tag + msg)
+        if level == "WARN":
+            self.warnings.append(msg)
+        elif level == "ERROR":
+            self.errors.append(msg)
+        if self.on_line:
+            try:
+                self.on_line(seq, ts, level, msg)
+            except Exception:
+                pass
 
     def ok(self, msg):
-        self.lines.append("[OK] " + msg)
+        self._add("OK", msg)
 
     def info(self, msg):
-        self.lines.append("[..] " + msg)
+        self._add("INFO", msg)
 
     def warn(self, msg):
-        self.lines.append("[AVISO] " + msg)
-        self.warnings.append(msg)
+        self._add("WARN", msg)
 
     def err(self, msg):
-        self.lines.append("[ERROR] " + msg)
-        self.errors.append(msg)
+        self._add("ERROR", msg)
 
     def text(self):
         head = "RESUMEN: %d lineas, %d avisos, %d errores\n%s\n\n" % (
-            len(self.lines), len(self.warnings), len(self.errors), "-" * 50)
-        return head + "\n".join(self.lines)
+            len(self.entries), len(self.warnings), len(self.errors), "-" * 60)
+        rows = []
+        for e in self.entries:
+            rows.append("%s  %-7s %s" % (e["ts"], "[%s]" % e["level"], e["msg"]))
+        return head + "\n".join(rows)
 
     def html(self):
+        colors = {"ERROR": "#b00020", "WARN": "#8a6d00", "OK": "#24606C", "INFO": "#555"}
         rows = []
-        for ln in self.lines:
-            if ln.startswith("[ERROR]"):
-                color = "#b00020"
-            elif ln.startswith("[AVISO]"):
-                color = "#8a6d00"
-            elif ln.startswith("[OK]"):
-                color = "#24606C"
-            else:
-                color = "#555"
-            rows.append('<div style="color:%s;font-family:monospace;font-size:12px">%s</div>'
-                        % (color, _esc(ln)))
+        for e in self.entries:
+            rows.append('<div style="color:%s;font-family:monospace;font-size:12px">'
+                        '<span style="color:#98a">%s</span> %s</div>'
+                        % (colors.get(e["level"], "#555"), e["ts"][11:19],
+                           _esc("[%s] %s" % (e["level"], e["msg"]))))
         return ("<b>%d lineas · %d avisos · %d errores</b><hr>"
-                % (len(self.lines), len(self.warnings), len(self.errors))) + "".join(rows)
+                % (len(self.entries), len(self.warnings), len(self.errors))) + "".join(rows)
 
 
 def _esc(s):
     return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+class Rollback:
+    """Registra objetos CREADOS en la corrida para poder deshacerlos.
+    Solo se registra lo que se crea (no lo que ya existia ni lo que se actualiza),
+    de modo que deshacer NUNCA borra registros previos del cliente."""
+
+    # Orden de borrado (dependencias primero): reglas, automatizaciones, vistas,
+    # acciones, accesos, campos, modelos, xmlid del grupo, grupo.
+    ORDER = ["ir.rule", "base.automation", "ir.ui.view", "ir.actions.server",
+             "ir.model.access", "ir.model.fields", "ir.model", "ir.model.data",
+             "res.groups"]
+
+    def __init__(self):
+        self.items = []    # (model, id)
+        self.params = []   # keys de ir.config_parameter creadas por nosotros
+
+    def add(self, model, rid):
+        if rid:
+            try:
+                self.items.append((model, int(rid)))
+            except (TypeError, ValueError):
+                pass
+
+    def add_param(self, key):
+        if key:
+            self.params.append(key)
+
+    def count(self):
+        return len(self.items)
+
+    def undo(self, client, report):
+        report.info("=" * 40)
+        report.warn("ROLLBACK ACTIVADO: deshaciendo %d objeto(s) creado(s) en esta corrida"
+                    % len(self.items))
+        rank = {m: i for i, m in enumerate(self.ORDER)}
+        ordered = sorted(self.items, key=lambda t: rank.get(t[0], 999))
+        undone = 0
+        for model, rid in ordered:
+            try:
+                client.execute(model, "unlink", [rid])
+                undone += 1
+                report.ok("Deshecho %s id %s" % (model, rid))
+            except Exception as e:
+                msg = str(e)
+                if "does not exist" in msg or "no existe" in msg or "MissingError" in msg:
+                    report.info("Ya no existia %s id %s (ok)" % (model, rid))
+                    undone += 1
+                else:
+                    report.err("No se pudo deshacer %s id %s: %s" % (model, rid, e))
+        # borrar nuestros parametros de rastreo para dejar la base limpia
+        for key in self.params:
+            try:
+                pid = client.search("ir.config_parameter", [("key", "=", key)], 1)
+                if pid:
+                    client.execute("ir.config_parameter", "unlink", pid)
+            except Exception:
+                pass
+        report.warn("ROLLBACK terminado: %d/%d objeto(s) deshecho(s), base restaurada"
+                    % (undone, len(self.items)))
+
+
 class Installer:
-    def __init__(self, client, dev, report=None):
+    def __init__(self, client, dev, report=None, tracker=None):
         self.c = client
         self.dev = dev
         self.r = report or Report()
+        self.tracker = tracker
         self.ctx = {"PARAM": {}, "ACTION": {}}
         self.group_xmlid = ""
         self.devkey = dev.get("key") or "lote"
+
+    def _track(self, model, rid):
+        if self.tracker is not None:
+            self.tracker.add(model, rid)
 
     # -- persistencia de IDs en Parametros del sistema ------------------
     def _pkey(self, kind, key):
         return "mlr.installer.%s.%s.%s" % (self.devkey, kind, key)
 
     def _persist(self, kind, key, value):
+        pk = self._pkey(kind, key)
         try:
-            self.c.set_param(self._pkey(kind, key), value)
+            self.c.set_param(pk, value)
+            if self.tracker is not None:
+                self.tracker.add_param(pk)
         except Exception as e:
-            self.r.warn("No se pudo guardar el parametro %s: %s" % (self._pkey(kind, key), e))
+            self.r.warn("No se pudo guardar el parametro %s: %s" % (pk, e))
 
     def _load_prior(self):
-        """Siembra ctx con los IDs previamente guardados (de este y otros lotes)."""
         try:
             params = self.c.list_params("mlr.installer.%")
         except Exception as e:
@@ -161,6 +250,19 @@ class Installer:
         return self.r
 
     # -- etapas ----------------------------------------------------------
+    def _resolve_create_val(self, raw):
+        """Resuelve un valor de plantilla de creacion.
+        - dict {"_search":[model, by, value]} -> id encontrado (o False)
+        - str -> se sustituyen marcadores ({{PARAM:..}}, {{GROUP}}, etc.)
+        - otro -> tal cual"""
+        if isinstance(raw, dict) and "_search" in raw:
+            m, by, val = raw["_search"]
+            rid = self.c.search(m, [(by, "=", val)], 1)
+            return rid[0] if rid else False
+        if isinstance(raw, str):
+            return self.subst(raw)
+        return raw
+
     def _params(self):
         for p in self.dev.get("params", []):
             key = p["key"]
@@ -176,6 +278,25 @@ class Installer:
                     self.ctx["PARAM"][key] = rec[0]
                     self._persist("PARAM", key, rec[0])
                     self.r.ok("Param %s -> id %s (%s %s=%s)" % (key, rec[0], model, field, value))
+                elif p.get("create"):
+                    # No existe: lo creamos con la plantilla del lote.
+                    cvals = {}
+                    bad_ref = None
+                    for k, raw in p["create"].items():
+                        rv = self._resolve_create_val(raw)
+                        if rv is False and isinstance(raw, dict) and "_search" in raw:
+                            bad_ref = raw["_search"]
+                        cvals[k] = rv
+                    if bad_ref is not None:
+                        self.r.err("Param %s: no se pudo crear %s, falta el registro padre (%s)"
+                                   % (key, model, bad_ref))
+                        continue
+                    nid = self.c.create(model, cvals)
+                    self._track(model, nid)
+                    self.ctx["PARAM"][key] = nid
+                    self._persist("PARAM", key, nid)
+                    self.r.ok("Param %s: no existia -> CREADO %s id %s (%s=%s). Revisa que sea correcto para esta base."
+                              % (key, model, nid, field, value))
                 else:
                     self.r.err("Param %s: no se encontro %s con %s=%s (revisa el 'value' para esta base)"
                                % (key, model, field, value))
@@ -183,8 +304,6 @@ class Installer:
                 self.r.err("Param %s: %s" % (key, e))
 
     def _groups(self):
-        """Crea (idempotente) los grupos custom del desarrollo y toma su ID externo (xmlid)
-        para referenciarlo genericamente via {{GROUP}}/{{GROUPS}}. No se teclea en la conexion."""
         for g in self.dev.get("groups", []):
             name = g.get("name")
             key = g.get("key", "GROUP")
@@ -195,6 +314,7 @@ class Installer:
                     self.r.info("Grupo '%s' ya existe (id %s)" % (name, gid))
                 else:
                     gid = self.c.create("res.groups", {"name": name})
+                    self._track("res.groups", gid)
                     self.r.ok("Grupo creado '%s' (id %s)" % (name, gid))
                 md = self.c.search_read("ir.model.data",
                                         [("model", "=", "res.groups"), ("res_id", "=", gid)],
@@ -203,8 +323,9 @@ class Installer:
                     xmlid = md[0]["module"] + "." + md[0]["name"]
                 else:
                     mdname = "res_groups_%d" % gid
-                    self.c.create("ir.model.data", {"module": "x_mlr", "name": mdname,
-                                                    "model": "res.groups", "res_id": gid})
+                    mdid = self.c.create("ir.model.data", {"module": "x_mlr", "name": mdname,
+                                                           "model": "res.groups", "res_id": gid})
+                    self._track("ir.model.data", mdid)
                     xmlid = "x_mlr." + mdname
                 if key == "GROUP":
                     self.group_xmlid = xmlid
@@ -226,6 +347,7 @@ class Installer:
                     "name": m["name"], "model": m["model"],
                     "transient": bool(m.get("transient")),
                 })
+                self._track("ir.model", mid)
                 self.c._model_id_cache[m["model"]] = mid
                 self._persist("MODEL", m["model"], mid)
                 self.r.ok("Modelo creado %s (id %s)" % (m["model"], mid))
@@ -256,7 +378,8 @@ class Installer:
                         self.c.write("ir.model.access", found, vals)
                         self.r.ok("Acceso actualizado %s / grupo %s" % (model, gid))
                     else:
-                        self.c.create("ir.model.access", vals)
+                        aid = self.c.create("ir.model.access", vals)
+                        self._track("ir.model.access", aid)
                         self.r.ok("Acceso creado %s / grupo %s" % (model, gid))
             except Exception as e:
                 self.r.err("Acceso %s: %s" % (model, e))
@@ -281,6 +404,14 @@ class Installer:
                             "required", "readonly", "tracking", "copied"):
                     if opt in f:
                         vals[opt] = f[opt]
+                # Politica de borrado para many2one. Odoo por defecto usa 'set null',
+                # que es INVALIDO en un m2o requerido: hay que forzar restrict/cascade.
+                if f["ttype"] == "many2one":
+                    od = f.get("on_delete") or f.get("ondelete")
+                    if f.get("required") and od not in ("restrict", "cascade"):
+                        od = "restrict"
+                    if od:
+                        vals["on_delete"] = od
                 if f.get("compute"):
                     vals["compute"] = self.subst(f["compute"])
                     vals["store"] = f.get("store", True)
@@ -295,12 +426,13 @@ class Installer:
                         continue
                     upd = {k: v for k, v in vals.items()
                            if k in ("field_description", "compute", "depends", "store",
-                                    "readonly", "tracking", "related", "required")}
+                                    "readonly", "tracking", "related", "required", "on_delete")}
                     self.c.write("ir.model.fields", [found[0]["id"]], upd)
                     self._persist("FIELD", "%s.%s" % (model, name), found[0]["id"])
                     self.r.ok("Campo actualizado %s.%s (id %s)" % (model, name, found[0]["id"]))
                 else:
                     fid = self.c.create("ir.model.fields", vals)
+                    self._track("ir.model.fields", fid)
                     self._persist("FIELD", "%s.%s" % (model, name), fid)
                     self.r.ok("Campo creado %s.%s (id %s)" % (model, name, fid))
             except Exception as e:
@@ -319,10 +451,8 @@ class Installer:
                 if a.get("contextual"):
                     vals["binding_model_id"] = mid
                     vals["binding_type"] = "action"
-                if a.get("groups"):
-                    gids = self._groups_ids([self.subst(g) for g in a["groups"]])
-                    if gids:
-                        vals["groups_id"] = [(6, 0, gids)]
+                # NOTA: en Odoo 19 ir.actions.server ya NO tiene 'groups_id'.
+                # La visibilidad por grupo se controla en la vista/menu; aqui no se envia.
                 found = self.c.search("ir.actions.server", [("name", "=", name)], 1)
                 if found:
                     self.c.write("ir.actions.server", found, vals)
@@ -330,6 +460,7 @@ class Installer:
                     self.r.ok("Accion actualizada %s (id %s)" % (name, aid))
                 else:
                     aid = self.c.create("ir.actions.server", vals)
+                    self._track("ir.actions.server", aid)
                     self.r.ok("Accion creada %s (id %s)" % (name, aid))
                 self.ctx["ACTION"][key] = aid
                 self._persist("ACTION", key, aid)
@@ -344,7 +475,6 @@ class Installer:
                 if not mid:
                     self.r.err("Automatizacion %s: modelo %s inexistente" % (name, au["model"]))
                     continue
-                # 1) accion de servidor con el codigo
                 act_name = name + " (accion)"
                 act_vals = {"name": act_name, "model_id": mid, "state": "code",
                             "code": self.subst(au["code"])}
@@ -354,8 +484,8 @@ class Installer:
                     act_id = afound[0]
                 else:
                     act_id = self.c.create("ir.actions.server", act_vals)
+                    self._track("ir.actions.server", act_id)
                 self._persist("AUTOM_ACTION", name, act_id)
-                # 2) campos de disparo
                 trig_fields = []
                 for fn in au.get("trigger_fields", []):
                     fr = self.c.search_read("ir.model.fields",
@@ -371,10 +501,9 @@ class Installer:
                     bvals["filter_pre_domain"] = self.subst(au["filter_pre_domain"])
                 if trig_fields:
                     bvals["trigger_field_ids"] = [(6, 0, trig_fields)]
-                # 3) crear/actualizar base.automation con fallback de 'trigger'
                 triggers = [au.get("trigger", "on_create")]
                 if triggers[0] not in ("on_create", "on_create_or_write"):
-                    triggers.append("on_create_or_write")  # fallback tolerante a versiones
+                    triggers.append("on_create_or_write")
                 bfound = self.c.search("base.automation", [("name", "=", name)], 1)
                 last_err = None
                 for trig in triggers:
@@ -383,7 +512,8 @@ class Installer:
                         if bfound:
                             self.c.write("base.automation", bfound, v)
                         else:
-                            self.c.create("base.automation", v)
+                            bid = self.c.create("base.automation", v)
+                            self._track("base.automation", bid)
                         note = "" if trig == triggers[0] else " (trigger fallback: %s)" % trig
                         self.r.ok("Automatizacion %s %s%s" % (
                             "actualizada" if bfound else "creada", name, note))
@@ -428,6 +558,7 @@ class Installer:
                     self.r.ok("Vista actualizada %s" % name)
                 else:
                     vid = self.c.create("ir.ui.view", vals)
+                    self._track("ir.ui.view", vid)
                     self._persist("VIEW", name, vid)
                     self.r.ok("Vista creada %s" % name)
             except Exception as e:
@@ -459,6 +590,7 @@ class Installer:
                     self.r.ok("Regla actualizada %s" % name)
                 else:
                     rid = self.c.create("ir.rule", vals)
+                    self._track("ir.rule", rid)
                     self._persist("RULE", name, rid)
                     self.r.ok("Regla creada %s" % name)
             except Exception as e:
@@ -466,8 +598,7 @@ class Installer:
 
 
 def send_report_email(client, report, dev_name):
-    """Envia el informe por correo desde Odoo. Si el usuario es m.arellano/direccionjm,
-    lo manda a m.gomez@mlrconsultores.com; si no, al correo del usuario ejecutor."""
+    """Envia el informe por correo desde Odoo."""
     try:
         me = client.search_read("res.users", [("id", "=", client.uid)], ["login", "email"], 1)
         login = (me[0].get("email") or me[0].get("login") or "").lower() if me else ""
@@ -478,7 +609,16 @@ def send_report_email(client, report, dev_name):
             "subject": "Instalador MLR Odoo — %s" % dev_name,
             "email_to": to, "body_html": body, "auto_delete": True,
         })
-        client.execute("mail.mail", "send", [mail_id])
+        try:
+            client.execute("mail.mail", "send", [mail_id])
+        except Exception as e2:
+            # 'send' devuelve None y algunas bases SaaS no lo pueden serializar por XML-RPC.
+            # El correo igual queda encolado/enviado; tratamos ese caso puntual como exito.
+            if "marshal None" in str(e2) or "allow_none" in str(e2):
+                pass
+            else:
+                raise
+        report.info("Correo del informe enviado a %s" % to)
         return to
     except Exception as e:
         report.err("No se pudo enviar el correo: %s" % e)

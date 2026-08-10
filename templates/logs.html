@@ -19,7 +19,11 @@
       <td style="color:#24606C;font-weight:700">{{ r['ok'] }}</td>
       <td style="color:#8a6d00;font-weight:700">{{ r['warn'] }}</td>
       <td style="color:{{ '#b00020' if r['err'] else '#8a9a9d' }};font-weight:700">{{ r['err'] }}</td>
-      <td><a class="btn sec sm" href="{{ url_for('log_view', lid=r['id']) }}">Ver informe</a></td>
+      <td style="white-space:nowrap">
+        <a class="btn sec sm" href="{{ url_for('log_view', lid=r['id']) }}">Ver</a>
+        <a class="btn sec sm" href="{{ url_for('log_download', lid=r['id']) }}">.txt</a>
+        {% if r['job_id'] %}<a class="btn sec sm" href="{{ url_for('install_job', job_id=r['job_id']) }}">Bitácora</a>{% endif %}
+      </td>
     </tr>
     {% endfor %}
     {% if not rows %}<tr><td colspan="9" class="muted">Sin instalaciones registradas todavía.</td></tr>{% endif %}

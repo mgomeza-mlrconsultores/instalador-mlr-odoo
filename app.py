@@ -11,14 +11,23 @@ import io
 import json
 import os
 import re
+import threading
+import uuid
 import zipfile
 from datetime import datetime, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+    _TZ = ZoneInfo("America/Mexico_City")
+except Exception:
+    _TZ = None
 from functools import wraps
 
-from flask import (Flask, request, redirect, url_for, render_template, flash, session)
+from flask import (Flask, request, redirect, url_for, render_template, flash, session,
+                   jsonify, Response, abort)
 
 from odoo_client import OdooClient, OdooError
-from installer import Installer, Report, send_report_email
+from installer import Installer, Report, Rollback, send_report_email
 import security as sec
 import store
 import brand
@@ -252,40 +261,156 @@ def _client_for(c):
     return cli
 
 
-@app.route("/install", methods=["POST"])
-@login_required
-def install():
-    c = store.get_connection(request.form["connection_id"])
-    app_code = request.form["app_code"]; version = request.form["version"]
-    send_mail = request.form.get("send_mail") == "1"
-    rep = Report()
-    to = None
+def _now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _run_install_job(job_id, c, app_code, version, user, send_mail, rollback_enabled):
+    """Corre la instalacion en segundo plano, transmitiendo cada linea a la BD (bitacora en vivo)."""
+    seqbox = {"n": 0}
+
+    def on_line(seq, ts, level, msg):
+        seqbox["n"] = seq
+        try:
+            store.add_job_line(job_id, seq, ts, level, msg)
+        except Exception:
+            pass
+
+    rep = Report(on_line=on_line)
+    tracker = Rollback()
+    cli = None
+    status = "done"
     try:
+        rep.info("Conectando a %s / %s ..." % (c["url"], c["database"]))
         cli = _client_for(c)
         rep.info("Conectado a %s / %s como uid %s" % (c["url"], c["database"], cli.uid))
         devs = store.version_devs(app_code, version)
         devs.sort(key=lambda d: (d.get("order", 999), d.get("_file", "")))
         rep.info("Instalando app '%s' version '%s' (%d codigos, en orden)"
                  % (app_code, version, len(devs)))
+        if rollback_enabled:
+            rep.info("Modo ROLLBACK activo: si hay errores, se deshara TODO lo creado en esta corrida.")
         for dev in devs:
             rep.info("=" * 40)
             rep.info(">>> CODIGO: %s  [app %s · v%s]" % (dev.get("name"), app_code, version))
-            Installer(cli, dev, rep).run()
+            Installer(cli, dev, rep, tracker).run()
         if send_mail:
-            to = send_report_email(cli, rep, "%s v%s" % (app_code, version))
+            send_report_email(cli, rep, "%s v%s" % (app_code, version))
     except (OdooError, ValueError) as e:
         rep.err("Conexion: %s" % e)
     except Exception as e:
         rep.err("Error inesperado: %s" % e)
+
+    if rep.errors and rollback_enabled:
+        if cli is not None and tracker.count():
+            try:
+                tracker.undo(cli, rep)
+            except Exception as e:
+                rep.err("Fallo durante el rollback: %s" % e)
+        else:
+            rep.info("No hay objetos creados que deshacer.")
+        status = "rolledback"
+    elif rep.errors:
+        status = "error"
+
+    ok = sum(1 for e in rep.entries if e["level"] == "OK")
     try:
-        ok = sum(1 for l in rep.lines if l.startswith("[OK]"))
-        store.add_log(datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                      session.get("auth"), c["name"] if c else "", c["database"] if c else "",
-                      app_code, version, ok, len(rep.warnings), len(rep.errors), rep.html())
-    except Exception as e:
-        rep.info("No se pudo guardar el historial: %s" % e)
-    return render_template("report.html", report=rep, conn=c,
-                           devfile="%s · version %s" % (app_code, version), mail_to=to)
+        store.add_log(_now(), user, c.get("name", ""), c.get("database", ""),
+                      app_code, version, ok, len(rep.warnings), len(rep.errors),
+                      rep.html(), rep.text(), job_id)
+    except Exception:
+        pass
+    try:
+        store.finish_job(job_id, status, ok, len(rep.warnings), len(rep.errors), _now())
+    except Exception:
+        pass
+
+
+@app.route("/install", methods=["POST"])
+@login_required
+def install():
+    c = store.get_connection(request.form["connection_id"])
+    if not c:
+        flash("Conexion no encontrada.")
+        return redirect(url_for("catalogo"))
+    app_code = request.form["app_code"]; version = request.form["version"]
+    send_mail = request.form.get("send_mail") == "1"
+    rollback_enabled = request.form.get("rollback") == "1"
+    job_id = uuid.uuid4().hex
+    store.create_job(job_id, _now(), session.get("auth"), c["name"], c["database"],
+                     app_code, version)
+    t = threading.Thread(target=_run_install_job,
+                         args=(job_id, c, app_code, version, session.get("auth"),
+                               send_mail, rollback_enabled), daemon=True)
+    t.start()
+    return redirect(url_for("install_job", job_id=job_id))
+
+
+def _fmt_local(iso):
+    """Convierte un ISO UTC a hora local (America/Mexico_City) legible."""
+    if not iso:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso)
+        if _TZ is not None:
+            dt = dt.astimezone(_TZ)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return iso
+
+
+@app.route("/install/job/<job_id>")
+@login_required
+def install_job(job_id):
+    job = store.get_job(job_id)
+    if not job:
+        abort(404)
+    lines = store.job_lines_all(job_id)
+    return render_template("install_job.html", job=job, lines=lines, fmt=_fmt_local)
+
+
+@app.route("/install/job/<job_id>/tail")
+@login_required
+def install_job_tail(job_id):
+    after = int(request.args.get("after", 0) or 0)
+    job = store.get_job(job_id)
+    if not job:
+        abort(404)
+    lines = store.job_lines_after(job_id, after)
+    return jsonify({
+        "status": job["status"], "ok": job["ok"], "warn": job["warn"], "err": job["err"],
+        "lines": [{"seq": l["seq"], "ts": l["ts"], "level": l["level"], "text": l["line"]}
+                  for l in lines],
+    })
+
+
+def _job_txt(job, lines):
+    head = []
+    head.append("INSTALADOR MLR - BITACORA DE INSTALACION")
+    head.append("=" * 60)
+    head.append("App:      %s  version %s" % (job["app_code"], job["version"]))
+    head.append("Base:     %s (%s)" % (job["connection_name"], job["database"]))
+    head.append("Usuario:  %s" % job["user"])
+    head.append("Inicio:   %s" % _fmt_local(job["ts_start"]))
+    head.append("Fin:      %s" % _fmt_local(job["ts_end"]))
+    head.append("Estado:   %s" % job["status"])
+    head.append("Resumen:  %s OK - %s avisos - %s errores" % (job["ok"], job["warn"], job["err"]))
+    head.append("=" * 60)
+    body = ["%s  [%s] %s" % (_fmt_local(l["ts"]), l["level"], l["line"]) for l in lines]
+    return "\n".join(head + [""] + body) + "\n"
+
+
+@app.route("/install/job/<job_id>/download")
+@login_required
+def install_job_download(job_id):
+    job = store.get_job(job_id)
+    if not job:
+        abort(404)
+    lines = store.job_lines_all(job_id)
+    txt = _job_txt(job, lines)
+    fname = "instalacion_%s_v%s_%s.txt" % (job["app_code"], job["version"], job_id[:8])
+    return Response(txt, mimetype="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="%s"' % fname})
 
 
 # --- Historial ---------------------------------------------------------
@@ -306,6 +431,25 @@ def log_view(lid):
     if not r:
         return redirect(url_for("logs"))
     return render_template("log_view.html", r=r)
+
+
+@app.route("/logs/<int:lid>/download")
+@login_required
+def log_download(lid):
+    r = store.get_log(lid)
+    if not r:
+        abort(404)
+    txt = r.get("report_txt") or ""
+    if not txt:
+        # informe antiguo sin texto: derivar del HTML de forma simple
+        txt = re.sub("<[^>]+>", "", (r.get("report_html") or "")).strip()
+    head = ("INSTALADOR MLR - INFORME\n%s\nApp: %s v%s\nBase: %s (%s)\nUsuario: %s\nFecha: %s\n"
+            "Resumen: %s OK - %s avisos - %s errores\n%s\n\n"
+            % ("=" * 60, r["app_code"], r["version"], r["connection_name"], r["database"],
+               r["user"], _fmt_local(r["ts"]), r["ok"], r["warn"], r["err"], "=" * 60))
+    fname = "informe_%s_v%s_%s.txt" % (r["app_code"], r["version"], lid)
+    return Response(head + txt + "\n", mimetype="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="%s"' % fname})
 
 
 # --- Usuarios (admin) --------------------------------------------------
