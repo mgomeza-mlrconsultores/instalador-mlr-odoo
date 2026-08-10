@@ -128,20 +128,42 @@ class Rollback:
         report.warn("ROLLBACK ACTIVADO: deshaciendo %d objeto(s) creado(s) en esta corrida"
                     % len(self.items))
         rank = {m: i for i, m in enumerate(self.ORDER)}
-        ordered = sorted(self.items, key=lambda t: rank.get(t[0], 999))
+        # Orden base por dependencias de tipo; dentro del mismo tipo, lo mas nuevo primero
+        # (los campos calculados/relacionados creados despues dependen de los anteriores).
+        pending = sorted(enumerate(self.items),
+                         key=lambda t: (rank.get(t[1][0], 999), -t[0]))
+        pending = [it for _, it in pending]
+        total = len(pending)
         undone = 0
-        for model, rid in ordered:
-            try:
-                client.execute(model, "unlink", [rid])
-                undone += 1
-                report.ok("Deshecho %s id %s" % (model, rid))
-            except Exception as e:
-                msg = str(e)
-                if "does not exist" in msg or "no existe" in msg or "MissingError" in msg:
-                    report.info("Ya no existia %s id %s (ok)" % (model, rid))
+        # Varias pasadas: si A no se puede borrar porque B depende de A, en la
+        # siguiente pasada ya se borro B y entonces A si se puede. Se repite hasta
+        # que una pasada completa no logre borrar nada mas.
+        last_err = {}
+        for _pass in range(6):
+            if not pending:
+                break
+            still = []
+            progressed = False
+            for model, rid in pending:
+                try:
+                    client.execute(model, "unlink", [rid])
                     undone += 1
-                else:
-                    report.err("No se pudo deshacer %s id %s: %s" % (model, rid, e))
+                    progressed = True
+                    report.ok("Deshecho %s id %s" % (model, rid))
+                except Exception as e:
+                    msg = str(e)
+                    if "does not exist" in msg or "no existe" in msg or "MissingError" in msg:
+                        undone += 1
+                        progressed = True
+                        report.info("Ya no existia %s id %s (ok)" % (model, rid))
+                    else:
+                        last_err[(model, rid)] = e
+                        still.append((model, rid))
+            pending = still
+            if not progressed:
+                break
+        for model, rid in pending:
+            report.err("No se pudo deshacer %s id %s: %s" % (model, rid, last_err.get((model, rid), "")))
         # borrar nuestros parametros de rastreo para dejar la base limpia
         for key in self.params:
             try:
@@ -252,9 +274,12 @@ class Installer:
     # -- etapas ----------------------------------------------------------
     def _resolve_create_val(self, raw):
         """Resuelve un valor de plantilla de creacion.
-        - dict {"_search":[model, by, value]} -> id encontrado (o False)
+        - dict {"_ref": "modulo.xmlid"}        -> id del registro por XML ID (independiente del idioma)
+        - dict {"_search":[model, by, value]}  -> id encontrado por busqueda (o False)
         - str -> se sustituyen marcadores ({{PARAM:..}}, {{GROUP}}, etc.)
         - otro -> tal cual"""
+        if isinstance(raw, dict) and "_ref" in raw:
+            return self.c.ref(raw["_ref"]) or False
         if isinstance(raw, dict) and "_search" in raw:
             m, by, val = raw["_search"]
             rid = self.c.search(m, [(by, "=", val)], 1)
@@ -284,8 +309,8 @@ class Installer:
                     bad_ref = None
                     for k, raw in p["create"].items():
                         rv = self._resolve_create_val(raw)
-                        if rv is False and isinstance(raw, dict) and "_search" in raw:
-                            bad_ref = raw["_search"]
+                        if rv is False and isinstance(raw, dict) and ("_search" in raw or "_ref" in raw):
+                            bad_ref = raw.get("_search") or raw.get("_ref")
                         cvals[k] = rv
                     if bad_ref is not None:
                         self.r.err("Param %s: no se pudo crear %s, falta el registro padre (%s)"
