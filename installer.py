@@ -326,6 +326,13 @@ class Installer:
                     self._persist("PARAM", key, p["fixed"])
                     self.r.ok("Param %s = %s (fijo)" % (key, p["fixed"]))
                     continue
+                # Idempotencia entre lotes: si otro lote (o corrida) ya resolvio/creo este
+                # registro, se reutiliza el MISMO id (evita duplicados como dos ubicaciones UBIC).
+                prev = self.ctx["PARAM"].get(key)
+                if prev:
+                    self._persist("PARAM", key, prev)
+                    self.r.info("Param %s ya resuelto antes (id %s), reutilizado" % (key, prev))
+                    continue
                 model = p["model"]; field = p["by"]; value = p["value"]
                 rec = self.c.search(model, [(field, "=", value)], 1)
                 if rec:
