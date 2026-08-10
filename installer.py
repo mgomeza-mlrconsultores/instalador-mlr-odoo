@@ -22,6 +22,8 @@ Marcadores admitidos dentro de code/arch/domain (listas de lineas o texto):
   {{GROUP}}         -> xmlid del grupo custom del entorno
   {{GROUPS}}        -> 'base.group_system,<grupo custom>'  (para groups= de vistas)
 """
+import re
+
 
 
 class Report:
@@ -76,7 +78,7 @@ class Installer:
         self.dev = dev
         self.r = report or Report()
         self.ctx = {"PARAM": {}, "ACTION": {}}
-        self.group_custom = dev.get("group_xmlid") or ""
+        self.group_xmlid = ""
         self.devkey = dev.get("key") or "lote"
 
     # -- persistencia de IDs en Parametros del sistema ------------------
@@ -109,6 +111,9 @@ class Installer:
             elif kind == "PARAM" and key not in self.ctx["PARAM"]:
                 self.ctx["PARAM"][key] = val
                 seeded += 1
+            elif kind == "GROUP" and not self.group_xmlid:
+                self.group_xmlid = val
+                seeded += 1
         if seeded:
             self.r.info("Sembrados %d IDs previos desde Parametros del sistema" % seeded)
 
@@ -123,8 +128,9 @@ class Installer:
             out = out.replace("{{PARAM:%s}}" % k, str(v))
         for k, v in self.ctx["ACTION"].items():
             out = out.replace("{{ACTION:%s}}" % k, str(v))
-        out = out.replace("{{GROUPS}}", "base.group_system," + self.group_custom)
-        out = out.replace("{{GROUP}}", self.group_custom)
+        grp = self.group_xmlid or ""
+        out = out.replace("{{GROUPS}}", ("base.group_system," + grp) if grp else "base.group_system")
+        out = out.replace("{{GROUP}}", grp)
         return out
 
     def _groups_ids(self, xmlids):
@@ -142,6 +148,7 @@ class Installer:
         try:
             self._load_prior()
             self._params()
+            self._groups()
             self._models()
             self._accesses()
             self._fields()
@@ -174,6 +181,38 @@ class Installer:
                                % (key, model, field, value))
             except Exception as e:
                 self.r.err("Param %s: %s" % (key, e))
+
+    def _groups(self):
+        """Crea (idempotente) los grupos custom del desarrollo y toma su ID externo (xmlid)
+        para referenciarlo genericamente via {{GROUP}}/{{GROUPS}}. No se teclea en la conexion."""
+        for g in self.dev.get("groups", []):
+            name = g.get("name")
+            key = g.get("key", "GROUP")
+            try:
+                found = self.c.search_read("res.groups", [("name", "=", name)], ["id"], 1)
+                if found:
+                    gid = found[0]["id"]
+                    self.r.info("Grupo '%s' ya existe (id %s)" % (name, gid))
+                else:
+                    gid = self.c.create("res.groups", {"name": name})
+                    self.r.ok("Grupo creado '%s' (id %s)" % (name, gid))
+                md = self.c.search_read("ir.model.data",
+                                        [("model", "=", "res.groups"), ("res_id", "=", gid)],
+                                        ["module", "name"], 1)
+                if md:
+                    xmlid = md[0]["module"] + "." + md[0]["name"]
+                else:
+                    mdname = "res_groups_%d" % gid
+                    self.c.create("ir.model.data", {"module": "x_mlr", "name": mdname,
+                                                    "model": "res.groups", "res_id": gid})
+                    xmlid = "x_mlr." + mdname
+                if key == "GROUP":
+                    self.group_xmlid = xmlid
+                self.ctx.setdefault("GROUPX", {})[key] = xmlid
+                self._persist("GROUP", key, xmlid)
+                self.r.ok("Grupo '%s' -> %s" % (name, xmlid))
+            except Exception as e:
+                self.r.err("Grupo '%s': %s" % (name, e))
 
     def _models(self):
         for m in self.dev.get("models", []):
