@@ -1,0 +1,22 @@
+name: keep-alive
+# Mantiene despierta la app en Render (plan free se duerme tras ~15 min de inactividad).
+# Repo publico -> minutos de Actions gratis. Cron ~cada 10 min (GitHub puede retrasarlo).
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping healthz
+        run: |
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 https://instalador-mlr-odoo.onrender.com/healthz || true)
+            echo "intento $i -> HTTP $code"
+            if [ "$code" = "200" ]; then echo "app despierta"; exit 0; fi
+            sleep 25
+          done
+          echo "no respondio 200 (pudo estar arrancando); no falla el workflow"
+          exit 0
