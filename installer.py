@@ -317,6 +317,19 @@ class Installer:
             return self.subst(raw)
         return raw
 
+    def _param_use_field(self, p, rec_id, model=None):
+        """Si el param define 'use_field', lee ese campo many2one del registro y devuelve
+        su id (p.ej. crear un almacen y usar su ubicacion interna lot_stock_id)."""
+        uf = p.get("use_field")
+        if not uf or not rec_id:
+            return rec_id
+        m = model or p.get("model")
+        row = self.c.search_read(m, [("id", "=", rec_id)], [uf], 1)
+        if row and row[0].get(uf):
+            val = row[0][uf]
+            return val[0] if isinstance(val, (list, tuple)) else val
+        return rec_id
+
     def _params(self):
         for p in self.dev.get("params", []):
             key = p["key"]
@@ -327,18 +340,30 @@ class Installer:
                     self.r.ok("Param %s = %s (fijo)" % (key, p["fixed"]))
                     continue
                 # Idempotencia entre lotes: si otro lote (o corrida) ya resolvio/creo este
-                # registro, se reutiliza el MISMO id (evita duplicados como dos ubicaciones UBIC).
+                # registro, se reutiliza el MISMO id (evita duplicados como dos ubicaciones).
                 prev = self.ctx["PARAM"].get(key)
                 if prev:
                     self._persist("PARAM", key, prev)
                     self.r.info("Param %s ya resuelto antes (id %s), reutilizado" % (key, prev))
                     continue
+                # Resolucion por XML ID (independiente del idioma)
+                if p.get("xmlid"):
+                    rid = self.c.ref(p["xmlid"])
+                    if not rid:
+                        self.r.err("Param %s: no se encontro el XML ID %s" % (key, p["xmlid"]))
+                        continue
+                    resolved = self._param_use_field(p, rid)
+                    self.ctx["PARAM"][key] = resolved
+                    self._persist("PARAM", key, resolved)
+                    self.r.ok("Param %s -> id %s (xmlid %s)" % (key, resolved, p["xmlid"]))
+                    continue
                 model = p["model"]; field = p["by"]; value = p["value"]
                 rec = self.c.search(model, [(field, "=", value)], 1)
                 if rec:
-                    self.ctx["PARAM"][key] = rec[0]
-                    self._persist("PARAM", key, rec[0])
-                    self.r.ok("Param %s -> id %s (%s %s=%s)" % (key, rec[0], model, field, value))
+                    resolved = self._param_use_field(p, rec[0], model)
+                    self.ctx["PARAM"][key] = resolved
+                    self._persist("PARAM", key, resolved)
+                    self.r.ok("Param %s -> id %s (%s %s=%s)" % (key, resolved, model, field, value))
                 elif p.get("create"):
                     # No existe: lo creamos con la plantilla del lote.
                     cvals = {}
@@ -348,7 +373,7 @@ class Installer:
                         if rv is _OMIT:
                             continue   # no incluir esta clave (p.ej. ubicacion sin padre)
                         if rv is False and isinstance(raw, dict) and any(
-                                key in raw for key in ("_search", "_ref", "_any", "_customer_parent")):
+                                kk in raw for kk in ("_search", "_ref", "_any", "_customer_parent")):
                             bad_ref = (raw.get("_search") or raw.get("_ref")
                                        or raw.get("_any") or "_customer_parent")
                         cvals[k] = rv
@@ -358,10 +383,11 @@ class Installer:
                         continue
                     nid = self.c.create(model, cvals)
                     self._track(model, nid)
-                    self.ctx["PARAM"][key] = nid
-                    self._persist("PARAM", key, nid)
-                    self.r.ok("Param %s: no existia -> CREADO %s id %s (%s=%s). Revisa que sea correcto para esta base."
-                              % (key, model, nid, field, value))
+                    resolved = self._param_use_field(p, nid, model)
+                    self.ctx["PARAM"][key] = resolved
+                    self._persist("PARAM", key, resolved)
+                    self.r.ok("Param %s: no existia -> CREADO %s id %s (usado id %s). Revisa que sea correcto para esta base."
+                              % (key, model, nid, resolved))
                 else:
                     self.r.err("Param %s: no se encontro %s con %s=%s (revisa el 'value' para esta base)"
                                % (key, model, field, value))
