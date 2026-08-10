@@ -110,8 +110,9 @@ class Rollback:
              "res.groups"]
 
     def __init__(self):
-        self.items = []    # (model, id)
-        self.params = []   # keys de ir.config_parameter creadas por nosotros
+        self.items = []        # (model, id) objetos CREADOS en esta corrida
+        self.params = []       # keys de ir.config_parameter creadas por nosotros
+        self.reactivate = []   # (model, id) objetos que DESACTIVAMOS (deprecate) y hay que reactivar si hay rollback
 
     def add(self, model, rid):
         if rid:
@@ -123,6 +124,14 @@ class Rollback:
     def add_param(self, key):
         if key:
             self.params.append(key)
+
+    def note_deactivated(self, model, rid):
+        """Registra un objeto que retiramos (active=False) para poder reactivarlo si hay rollback."""
+        if rid:
+            try:
+                self.reactivate.append((model, int(rid)))
+            except (TypeError, ValueError):
+                pass
 
     def count(self):
         return len(self.items)
@@ -168,6 +177,13 @@ class Rollback:
                 break
         for model, rid in pending:
             report.err("No se pudo deshacer %s id %s: %s" % (model, rid, last_err.get((model, rid), "")))
+        # reactivar lo que habiamos desactivado (deprecate) para restaurar el estado previo
+        for model, rid in self.reactivate:
+            try:
+                client.write(model, [rid], {"active": True})
+                report.ok("Reactivado %s id %s (se restaura por rollback)" % (model, rid))
+            except Exception as e:
+                report.warn("No se pudo reactivar %s id %s: %s" % (model, rid, e))
         # borrar nuestros parametros de rastreo para dejar la base limpia
         for key in self.params:
             try:
@@ -262,6 +278,7 @@ class Installer:
     def run(self):
         try:
             self._load_prior()
+            self._deprecate()
             self._params()
             self._groups()
             self._models()
@@ -276,6 +293,61 @@ class Installer:
         return self.r
 
     # -- etapas ----------------------------------------------------------
+    def _deprecate(self):
+        """Localiza objetos del modelo ANTERIOR que esta version reemplaza y los retira
+        (los desactiva, o los elimina si op='delete'), para que el instalador sirva tanto
+        para CREAR de cero como para ARREGLAR una base que ya tenia una version previa.
+
+        Cada entrada del bundle:
+          {"model": "base.automation",
+           "name_like": "[MLR] AA",            # o "name_in": [..nombres exactos..]
+           "keep": [..nombres que SI deben quedar (los de esta version)..],
+           "op": "deactivate" (por defecto) | "delete",
+           "reason": "texto opcional"}
+
+        Solo actua sobre registros ACTIVOS que hagan match y NO esten en 'keep', de modo que
+        es idempotente (en una reinstalacion no vuelve a tocar nada) y nunca retira lo nuevo.
+        Lo desactivado queda registrado en el tracker para restaurarse si hay rollback."""
+        for d in self.dev.get("deprecate", []):
+            model = d.get("model")
+            op = d.get("op", "deactivate")
+            keep = set(d.get("keep", []))
+            reason = d.get("reason", "")
+            try:
+                if d.get("name_in"):
+                    domain = [("name", "in", list(d["name_in"]))]
+                elif d.get("name_like"):
+                    domain = [("name", "like", d["name_like"])]
+                else:
+                    self.r.warn("Deprecate en %s sin criterio (name_in/name_like), omitido" % model)
+                    continue
+                recs = self.c.search_read(model, domain, ["id", "name"])
+                objetivos = [r for r in recs if r.get("name") not in keep]
+                if not objetivos:
+                    self.r.info("Revision de obsoletos en %s: nada por %s (encontrados %d, todos vigentes)"
+                                % (model, op, len(recs)))
+                    continue
+                self.r.info("Revision de obsoletos en %s: %d por %s%s"
+                            % (model, len(objetivos), op, (" - %s" % reason) if reason else ""))
+                for r in objetivos:
+                    rid = r["id"]; rname = r.get("name")
+                    try:
+                        if op == "delete":
+                            self.c.execute(model, "unlink", [rid])
+                            self.r.ok("Obsoleto localizado y ELIMINADO en %s: '%s' (id %s)"
+                                      % (model, rname, rid))
+                        else:
+                            self.c.write(model, [rid], {"active": False})
+                            if self.tracker is not None:
+                                self.tracker.note_deactivated(model, rid)
+                            self.r.ok("Obsoleto localizado y DESACTIVADO en %s: '%s' (id %s)"
+                                      % (model, rname, rid))
+                    except Exception as e:
+                        self.r.warn("No se pudo %s en %s '%s' (id %s): %s"
+                                    % (op, model, rname, rid, e))
+            except Exception as e:
+                self.r.err("Deprecate en %s: %s" % (model, e))
+
     def _resolve_create_val(self, raw):
         """Resuelve un valor de plantilla de creacion.
         - dict {"_ref": "modulo.xmlid"}        -> id del registro por XML ID (independiente del idioma)
