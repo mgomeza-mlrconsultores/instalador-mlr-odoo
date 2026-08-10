@@ -1,6 +1,13 @@
 __pycache__/
 *.pyc
 data/
-instalador.db
-*.zip
+.appkey
+*.appkey
+.secret_key
 .env
+.venv/
+logs/
+*.zip
+Bundles de codigos/
+iniciar.ps1
+instalador.db

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h2>Historial de instalaciones</h2>
+  <form method="get" action="{{ url_for('logs') }}">
+    <div class="row">
+      <div><label>App (código)</label><input name="app" value="{{ q_app }}" placeholder="acretex_venta_sin_factura"></div>
+      <div><label>Desde</label><input type="date" name="from" value="{{ q_from }}"></div>
+      <div><label>Hasta</label><input type="date" name="to" value="{{ q_to }}"></div>
+      <div style="display:flex;align-items:flex-end"><button type="submit">Filtrar</button></div>
+    </div>
+  </form>
+  <table style="margin-top:14px">
+    <tr><th>Fecha (UTC)</th><th>App</th><th>Versión</th><th>Base</th><th>Usuario</th><th>OK</th><th>Avisos</th><th>Errores</th><th></th></tr>
+    {% for r in rows %}
+    <tr>
+      <td class="muted">{{ r['ts'] }}</td><td>{{ r['app_code'] }}</td><td>{{ r['version'] }}</td>
+      <td class="muted">{{ r['connection_name'] }} ({{ r['database'] }})</td><td class="muted">{{ r['user'] }}</td>
+      <td style="color:#24606C;font-weight:700">{{ r['ok'] }}</td>
+      <td style="color:#8a6d00;font-weight:700">{{ r['warn'] }}</td>
+      <td style="color:{{ '#b00020' if r['err'] else '#8a9a9d' }};font-weight:700">{{ r['err'] }}</td>
+      <td><a class="btn sec sm" href="{{ url_for('log_view', lid=r['id']) }}">Ver informe</a></td>
+    </tr>
+    {% endfor %}
+    {% if not rows %}<tr><td colspan="9" class="muted">Sin instalaciones registradas todavía.</td></tr>{% endif %}
+  </table>
+  <div class="muted" style="margin-top:8px">Se listan las 500 más recientes.</div>
+</div>
+{% endblock %}

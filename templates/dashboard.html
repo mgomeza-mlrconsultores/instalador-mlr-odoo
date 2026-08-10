@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h2>Panel</h2>
+  <div class="tiles">
+    <div class="tile"><div class="n">{{ n_apps }}</div><div class="l">Apps en catálogo</div></div>
+    <div class="tile"><div class="n">{{ n_ver }}</div><div class="l">Versiones</div></div>
+    <div class="tile"><div class="n">{{ n_conns }}</div><div class="l">Conexiones</div></div>
+    <div class="tile"><div class="n">{{ n_logs }}</div><div class="l">Instalaciones</div></div>
+    <div class="tile"><div class="n">{{ n_users }}</div><div class="l">Usuarios</div></div>
+  </div>
+  <div style="margin-top:16px">
+    <a class="btn" href="{{ url_for('catalogo') }}">Ir al catálogo</a>
+    <a class="btn sec" href="{{ url_for('conexiones') }}">Conexiones</a>
+    <a class="btn sec" href="{{ url_for('logs') }}">Historial</a>
+  </div>
+</div>
+<div class="card">
+  <h2>Últimas instalaciones</h2>
+  <table>
+    <tr><th>Fecha (UTC)</th><th>App</th><th>Versión</th><th>Base</th><th>OK</th><th>Avisos</th><th>Errores</th></tr>
+    {% for r in last %}
+    <tr><td class="muted">{{ r['ts'] }}</td><td>{{ r['app_code'] }}</td><td>{{ r['version'] }}</td>
+        <td class="muted">{{ r['connection_name'] }}</td>
+        <td style="color:#24606C;font-weight:700">{{ r['ok'] }}</td>
+        <td style="color:#8a6d00;font-weight:700">{{ r['warn'] }}</td>
+        <td style="color:{{ '#b00020' if r['err'] else '#8a9a9d' }};font-weight:700">{{ r['err'] }}</td></tr>
+    {% endfor %}
+    {% if not last %}<tr><td colspan="7" class="muted">Aún no hay instalaciones.</td></tr>{% endif %}
+  </table>
+</div>
+{% endblock %}

@@ -5,6 +5,7 @@
   <div class="muted">Base: {{ conn['name'] }} ({{ conn['database'] }}) · {{ devfile }}
     {% if mail_to %} · informe enviado a {{ mail_to }}{% endif %}</div>
   <div style="margin:14px 0">{{ report.html() | safe }}</div>
-  <a class="btn" href="{{ url_for('index') }}">Volver al catálogo</a>
+  <a class="btn" href="{{ url_for('catalogo') }}">Volver al catálogo</a>
+  <a class="btn sec" href="{{ url_for('logs') }}">Ver historial</a>
 </div>
 {% endblock %}

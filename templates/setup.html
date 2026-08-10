@@ -3,16 +3,16 @@
 <div class="authwrap">
   <div class="authcard">
     <img src="{{ brand.LOGO_VERTICAL }}" alt="MLR Consultores">
-    <div class="lema">Configuracion inicial</div>
+    <div class="lema">Configuración inicial · primer administrador</div>
     {% with msgs = get_flashed_messages() %}{% for m in msgs %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
-    <p class="muted" style="text-align:left">Crea el usuario y la <b>contrasena maestra</b>. Con ella entras y se cifran/descifran las API keys. Gu&aacute;rdala bien: no se puede recuperar.</p>
+    <p class="muted" style="text-align:left">Crea el primer usuario <b>administrador</b>. Luego podrás crear más usuarios con rol administrador o usuario.</p>
     <form method="post" action="{{ url_for('setup') }}">
       <div style="text-align:left">
-        <label>Usuario</label><input name="username" value="mlr" required>
-        <label>Contrasena maestra</label><input type="password" name="password" required>
-        <label>Repite la contrasena</label><input type="password" name="confirm" required>
+        <label>Usuario</label><input name="username" value="admin" required>
+        <label>Contraseña</label><input type="password" name="password" required>
+        <label>Repite la contraseña</label><input type="password" name="confirm" required>
       </div>
-      <div style="margin-top:16px"><button type="submit" style="width:100%">Crear y continuar</button></div>
+      <div style="margin-top:16px"><button type="submit" style="width:100%">Crear administrador</button></div>
     </form>
   </div>
 </div>

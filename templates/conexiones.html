@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h2>Conexiones (bases Odoo)</h2>
+  <p class="muted">Se guardan aquí una vez y se eligen al instalar. La API key se guarda cifrada; el grupo custom viaja con la conexión.</p>
+  <table>
+    <tr><th>Nombre</th><th>URL</th><th>Base</th><th>Usuario</th><th>Grupo custom</th>{% if cur_role=='administrador' %}<th></th>{% endif %}</tr>
+    {% for c in connections %}
+    <tr>
+      <td>{{c['name']}}</td><td class="muted">{{c['url']}}</td><td>{{c['database']}}</td>
+      <td>{{c['username']}}</td><td class="muted">{{c['group_xmlid']}}</td>
+      {% if cur_role=='administrador' %}
+      <td style="white-space:nowrap">
+        <a class="btn sec sm" href="{{ url_for('conn_test', cid=c['id']) }}">Probar</a>
+        <a class="btn danger sm" href="{{ url_for('conn_delete', cid=c['id']) }}" onclick="return confirm('¿Eliminar?')">Borrar</a>
+      </td>{% endif %}
+    </tr>
+    {% endfor %}
+    {% if not connections %}<tr><td colspan="6" class="muted">Sin conexiones todavía.</td></tr>{% endif %}
+  </table>
+
+  {% if cur_role=='administrador' %}
+  <h3>Agregar conexión</h3>
+  <form method="post" action="{{ url_for('conn_save') }}">
+    <input type="hidden" name="id" value="">
+    <div class="row">
+      <div><label>Nombre</label><input name="name" placeholder="ACRETEX Pruebas" required></div>
+      <div><label>URL</label><input name="url" placeholder="https://pruebaconsultores.odoo.com" required></div>
+    </div>
+    <div class="row">
+      <div><label>Base de datos</label><input name="database" placeholder="pruebaconsultores" required></div>
+      <div><label>Usuario (login)</label><input name="username" placeholder="acretex@gmail.com" required></div>
+    </div>
+    <div class="row">
+      <div><label>API Key (se guarda cifrada)</label><input name="api_key" type="password" placeholder="••••••••"></div>
+      <div><label>XML ID del grupo custom</label><input name="group_xmlid" placeholder="__export__.res_groups_84_5b1291db"></div>
+    </div>
+    <div style="margin-top:12px"><button type="submit">Guardar conexión</button></div>
+    <div class="muted" style="margin-top:6px">Grupo: pruebas <code>__export__.res_groups_84_5b1291db</code> · producción <code>__export__.res_groups_84_23e50353</code>.</div>
+  </form>
+  {% else %}
+  <p class="muted">Solo un administrador puede crear o editar conexiones.</p>
+  {% endif %}
+</div>
+{% endblock %}

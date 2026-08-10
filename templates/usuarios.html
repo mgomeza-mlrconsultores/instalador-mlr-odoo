@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h2>Usuarios</h2>
+  <table>
+    <tr><th>Usuario</th><th>Rol</th><th>Creado</th><th>Acciones</th></tr>
+    {% for u in rows %}
+    <tr>
+      <td>{{ u['username'] }}</td>
+      <td><span class="rolepill {{ 'admin' if u['role']=='administrador' else 'user' }}">{{ u['role'] }}</span></td>
+      <td class="muted">{{ u['created_at'] }}</td>
+      <td>
+        <form method="post" action="{{ url_for('user_role') }}" style="display:inline-flex;gap:4px;align-items:center">
+          <input type="hidden" name="id" value="{{ u['id'] }}">
+          <select name="role" style="width:auto;padding:5px">
+            <option value="usuario" {{ 'selected' if u['role']=='usuario' }}>usuario</option>
+            <option value="administrador" {{ 'selected' if u['role']=='administrador' }}>administrador</option>
+          </select>
+          <button class="sm" type="submit">Rol</button>
+        </form>
+        <form method="post" action="{{ url_for('user_reset') }}" style="display:inline-flex;gap:4px;align-items:center">
+          <input type="hidden" name="id" value="{{ u['id'] }}">
+          <input name="password" type="password" placeholder="nueva contraseña" style="width:150px;padding:5px">
+          <button class="sm sec btn" type="submit">Reset</button>
+        </form>
+        <a class="btn danger sm" href="{{ url_for('user_delete', uid=u['id']) }}" onclick="return confirm('¿Eliminar usuario?')">Borrar</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <h3>Crear usuario</h3>
+  <form method="post" action="{{ url_for('user_create') }}">
+    <div class="row">
+      <div><label>Usuario</label><input name="username" required></div>
+      <div><label>Contraseña</label><input name="password" type="password" required></div>
+      <div><label>Rol</label><select name="role"><option value="usuario">usuario</option><option value="administrador">administrador</option></select></div>
+    </div>
+    <div style="margin-top:12px"><button type="submit">Crear usuario</button></div>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h2>Catálogo de apps y versiones</h2>
+  {% if not apps %}<p class="muted">Aún no hay códigos. {% if cur_role=='administrador' %}Sube un bundle (.zip) o código (.json) más abajo.{% else %}Pide a un administrador que suba códigos.{% endif %}</p>{% endif %}
+  {% for a in apps %}
+    <div class="appblock">
+      <h3>{{ a.app_name }} <span class="pill">{{ a.app_code }}</span> <span class="pill">{{ a.versions|length }} versión(es)</span></h3>
+      {% for v in a.versions %}
+        <div style="border-top:1px solid #e6eef0;padding:10px 0">
+          <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+            <b class="brandfont">v{{ v.version }}</b>{% if loop.first %}<span class="pill">última</span>{% endif %}
+            <span class="muted">{{ v.uploaded_at }} · {{ v.devs|length }} código(s): {{ v.devs|map(attribute='name')|join(', ') }}</span>
+          </div>
+          <form method="post" action="{{ url_for('install') }}" style="margin-top:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center"
+                onsubmit="return confirm('Instalar {{a.app_code}} v{{v.version}} en la base elegida?')">
+            <input type="hidden" name="app_code" value="{{ a.app_code }}">
+            <input type="hidden" name="version" value="{{ v.version }}">
+            <select name="connection_id" required style="max-width:280px">
+              <option value="">— base destino —</option>
+              {% for c in connections %}<option value="{{c['id']}}">{{c['name']}} ({{c['database']}})</option>{% endfor %}
+            </select>
+            <label style="margin:0;font-weight:400"><input type="checkbox" name="send_mail" value="1" style="width:auto"> correo</label>
+            <button class="sm" type="submit">Instalar esta versión</button>
+            {% if cur_role=='administrador' %}
+            <button class="btn danger sm" type="submit" formaction="{{ url_for('version_delete') }}" formnovalidate
+                    onclick="return confirm('¿Eliminar la versión {{v.version}}?')">Borrar versión</button>
+            {% endif %}
+          </form>
+        </div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+</div>
+
+{% if cur_role=='administrador' %}
+<div class="card">
+  <h2>Subir código / bundle (nueva versión)</h2>
+  <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data">
+    <div class="row"><div><label>Archivo (.zip con varios .json, o .json suelto)</label><input type="file" name="bundle" accept=".json,.zip" required></div></div>
+    <div class="row">
+      <div><label>Código de app (identificador)</label><input name="app_code" placeholder="acretex_venta_sin_factura"></div>
+      <div><label>Nombre de la app</label><input name="app_name" placeholder="ACRETEX · Venta sin factura"></div>
+      <div><label>Versión</label><input name="version" placeholder="1.0.0 (vacío = fecha/hora)"></div>
+    </div>
+    <label style="margin-top:10px;font-weight:400"><input type="checkbox" name="overwrite" value="1" style="width:auto"> Sobrescribir si la versión ya existe</label>
+    <div style="margin-top:12px"><button type="submit">Subir a mi base de códigos</button></div>
+    <div class="muted" style="margin-top:6px">Cada subida crea una <b>versión</b>; puedes conservar e instalar versiones anteriores.</div>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

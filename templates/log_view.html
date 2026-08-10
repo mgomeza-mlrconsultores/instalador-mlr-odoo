@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="card">
+  <h2>Informe de instalación</h2>
+  <div class="muted">{{ r['ts'] }} · App {{ r['app_code'] }} · versión {{ r['version'] }} ·
+    Base: {{ r['connection_name'] }} ({{ r['database'] }}) · Usuario: {{ r['user'] }}</div>
+  <div style="margin:14px 0">{{ r['report_html'] | safe }}</div>
+  <a class="btn" href="{{ url_for('logs') }}">Volver al historial</a>
+</div>
+{% endblock %}

@@ -3,12 +3,12 @@
 <div class="authwrap">
   <div class="authcard">
     <img src="{{ brand.LOGO_VERTICAL }}" alt="MLR Consultores">
-    <div class="lema">Instalador de codigos Odoo · por API (SaaS)</div>
+    <div class="lema">Instalador de códigos Odoo · por API (SaaS)</div>
     {% with msgs = get_flashed_messages() %}{% for m in msgs %}<div class="flash">{{ m }}</div>{% endfor %}{% endwith %}
     <form method="post" action="{{ url_for('login') }}">
       <div style="text-align:left">
         <label>Usuario</label><input name="username" autofocus required>
-        <label>Contrasena maestra</label><input type="password" name="password" required>
+        <label>Contraseña</label><input type="password" name="password" required>
       </div>
       <div style="margin-top:16px"><button type="submit" style="width:100%">Entrar</button></div>
     </form>
