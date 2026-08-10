@@ -278,6 +278,13 @@ class Installer:
         - dict {"_search":[model, by, value]}  -> id encontrado por busqueda (o False)
         - str -> se sustituyen marcadores ({{PARAM:..}}, {{GROUP}}, etc.)
         - otro -> tal cual"""
+        if isinstance(raw, dict) and "_any" in raw:
+            # Intenta varias estrategias en orden; usa la primera que resuelva.
+            for cand in raw["_any"]:
+                rv = self._resolve_create_val(cand)
+                if rv:
+                    return rv
+            return False
         if isinstance(raw, dict) and "_ref" in raw:
             return self.c.ref(raw["_ref"]) or False
         if isinstance(raw, dict) and "_search" in raw:
@@ -309,8 +316,8 @@ class Installer:
                     bad_ref = None
                     for k, raw in p["create"].items():
                         rv = self._resolve_create_val(raw)
-                        if rv is False and isinstance(raw, dict) and ("_search" in raw or "_ref" in raw):
-                            bad_ref = raw.get("_search") or raw.get("_ref")
+                        if rv is False and isinstance(raw, dict) and ("_search" in raw or "_ref" in raw or "_any" in raw):
+                            bad_ref = raw.get("_search") or raw.get("_ref") or raw.get("_any")
                         cvals[k] = rv
                     if bad_ref is not None:
                         self.r.err("Param %s: no se pudo crear %s, falta el registro padre (%s)"
