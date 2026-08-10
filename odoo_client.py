@@ -6,9 +6,34 @@ class OdooError(Exception):
     pass
 
 
+def normalize_base_url(url):
+    """Devuelve la URL base correcta para XML-RPC.
+
+    El endpoint XML-RPC de Odoo vive en la RAIZ del dominio
+    (https://midominio.odoo.com/xmlrpc/2/common), no bajo /odoo ni /web.
+    Los usuarios suelen pegar la URL del cliente web (que en Odoo 17+
+    termina en /odoo), o con /web, o con barra final. Aqui se limpia
+    todo eso para que la conexion nunca falle por la ruta.
+    """
+    u = (url or "").strip().rstrip("/")
+    if not u:
+        return u
+    if "://" not in u:
+        u = "https://" + u
+    # Quita sufijos de ruta del cliente web que no aplican a XML-RPC.
+    lowered = u.lower()
+    for suffix in ("/odoo", "/web/login", "/web", "/xmlrpc/2/common",
+                   "/xmlrpc/2/object", "/xmlrpc/2", "/xmlrpc"):
+        while lowered.endswith(suffix):
+            u = u[: -len(suffix)]
+            lowered = u.lower().rstrip("/")
+            u = u.rstrip("/")
+    return u.rstrip("/")
+
+
 class OdooClient:
     def __init__(self, url, db, username, api_key):
-        self.url = (url or "").rstrip("/")
+        self.url = normalize_base_url(url)
         self.db = db
         self.username = username
         self.api_key = api_key
