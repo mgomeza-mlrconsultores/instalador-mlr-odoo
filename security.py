@@ -53,6 +53,10 @@ def load_app_key(data_dir):
     return key
 
 
+def new_app_key():
+    return Fernet.generate_key().decode()
+
+
 def encrypt(fkey, plaintext):
     return Fernet(fkey).encrypt((plaintext or "").encode()).decode()
 
